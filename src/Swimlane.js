@@ -11,7 +11,7 @@ export default class Swimlane extends React.Component {
           id={client.id}
           name={client.name}
           description={client.description}
-          status={client.status}
+          status={this.props.status}
         />
       );
     })

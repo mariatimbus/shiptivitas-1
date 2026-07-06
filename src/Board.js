@@ -4,16 +4,18 @@ import 'dragula/dist/dragula.css';
 import Swimlane from './Swimlane';
 import './Board.css';
 
+const API_URL = 'http://localhost:3001/api/v1';
+
 export default class Board extends React.Component {
   constructor(props) {
     super(props);
-    const clients = this.getClients();
     this.state = {
       clients: {
-        backlog: clients.filter(client => !client.status || client.status === 'backlog'),
-        inProgress: clients.filter(client => client.status && client.status === 'in-progress'),
-        complete: clients.filter(client => client.status && client.status === 'complete'),
-      }
+        backlog: [],
+        inProgress: [],
+        complete: [],
+      },
+      loading: true,
     }
     this.swimlanes = {
       backlog: React.createRef(),
@@ -21,54 +23,159 @@ export default class Board extends React.Component {
       complete: React.createRef(),
     }
   }
-  getClients() {
-    return [
-      ['1','Stark, White and Abbott','Cloned Optimal Architecture', 'in-progress'],
-      ['2','Wiza LLC','Exclusive Bandwidth-Monitored Implementation', 'complete'],
-      ['3','Nolan LLC','Vision-Oriented 4Thgeneration Graphicaluserinterface', 'backlog'],
-      ['4','Thompson PLC','Streamlined Regional Knowledgeuser', 'in-progress'],
-      ['5','Walker-Williamson','Team-Oriented 6Thgeneration Matrix', 'in-progress'],
-      ['6','Boehm and Sons','Automated Systematic Paradigm', 'backlog'],
-      ['7','Runolfsson, Hegmann and Block','Integrated Transitional Strategy', 'backlog'],
-      ['8','Schumm-Labadie','Operative Heuristic Challenge', 'backlog'],
-      ['9','Kohler Group','Re-Contextualized Multi-Tasking Attitude', 'backlog'],
-      ['10','Romaguera Inc','Managed Foreground Toolset', 'backlog'],
-      ['11','Reilly-King','Future-Proofed Interactive Toolset', 'complete'],
-      ['12','Emard, Champlin and Runolfsdottir','Devolved Needs-Based Capability', 'backlog'],
-      ['13','Fritsch, Cronin and Wolff','Open-Source 3Rdgeneration Website', 'complete'],
-      ['14','Borer LLC','Profit-Focused Incremental Orchestration', 'backlog'],
-      ['15','Emmerich-Ankunding','User-Centric Stable Extranet', 'in-progress'],
-      ['16','Willms-Abbott','Progressive Bandwidth-Monitored Access', 'in-progress'],
-      ['17','Brekke PLC','Intuitive User-Facing Customerloyalty', 'complete'],
-      ['18','Bins, Toy and Klocko','Integrated Assymetric Software', 'backlog'],
-      ['19','Hodkiewicz-Hayes','Programmable Systematic Securedline', 'backlog'],
-      ['20','Murphy, Lang and Ferry','Organized Explicit Access', 'backlog'],
-    ].map(companyDetails => ({
-      id: companyDetails[0],
-      name: companyDetails[1],
-      description: companyDetails[2],
-      status: companyDetails[3],
-    }));
+
+  componentDidMount() {
+    this.initDragula();
+    this.loadClients();
   }
-  renderSwimlane(name, clients, ref) {
+
+  componentWillUnmount() {
+    try {
+      if (this.drake) {
+        this.drake.destroy();
+      }
+    } catch (e) {
+      // Ignore Dragula cleanup errors during unmount
+    }
+  }
+
+  initDragula() {
+    const containers = [
+      this.swimlanes.backlog.current,
+      this.swimlanes.inProgress.current,
+      this.swimlanes.complete.current,
+    ];
+    this.drake = Dragula(containers);
+    this.drake.on('drop', (el, target, source, sibling) => {
+      this.drake.cancel(true);
+      this.handleDrop(el, target, sibling);
+    });
+  }
+
+  loadClients() {
+    fetch(`${API_URL}/clients`)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        return res.json();
+      })
+      .then(clients => {
+        const statusMap = {
+          backlog: 'backlog',
+          'in-progress': 'inProgress',
+          complete: 'complete',
+        };
+        const grouped = {
+          backlog: [],
+          inProgress: [],
+          complete: [],
+        };
+        clients.forEach(client => {
+          const key = statusMap[client.status];
+          if (key) {
+            grouped[key].push(client);
+          }
+        });
+        Object.keys(grouped).forEach(key => {
+          grouped[key].sort((a, b) => a.priority - b.priority);
+        });
+        this.setState({ clients: grouped, loading: false });
+      })
+      .catch(err => {
+        console.error('Failed to load clients:', err);
+        this.setState({ loading: false });
+      });
+  }
+
+  laneKeyForContainer(container) {
+    for (const key of Object.keys(this.swimlanes)) {
+      if (this.swimlanes[key].current === container) {
+        return key;
+      }
+    }
+    return null;
+  }
+
+  handleDrop(el, target, sibling) {
+    const targetKey = this.laneKeyForContainer(target);
+    const draggedId = parseInt(el.getAttribute('data-id'), 10);
+
+    const statusMap = {
+      backlog: 'backlog',
+      inProgress: 'in-progress',
+      complete: 'complete',
+    };
+    const newStatus = statusMap[targetKey];
+
+    let draggedClient = null;
+    for (const key of Object.keys(this.state.clients)) {
+      draggedClient = this.state.clients[key].find(c => c.id === draggedId);
+      if (draggedClient) break;
+    }
+
+    if (!draggedClient) return;
+
+    draggedClient = { ...draggedClient, status: newStatus };
+
+    const newClients = {};
+    for (const key of Object.keys(this.state.clients)) {
+      newClients[key] = this.state.clients[key].filter(c => c.id !== draggedId);
+    }
+
+    let insertIndex = newClients[targetKey].length;
+    if (sibling) {
+      const siblingId = parseInt(sibling.getAttribute('data-id'), 10);
+      const siblingIndex = newClients[targetKey].findIndex(c => c.id === siblingId);
+      if (siblingIndex !== -1) {
+        insertIndex = siblingIndex;
+      }
+    }
+
+    newClients[targetKey].splice(insertIndex, 0, draggedClient);
+    const newPriority = insertIndex + 1;
+
+    this.setState({ clients: newClients });
+
+    fetch(`${API_URL}/clients/${draggedId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus, priority: newPriority }),
+    })
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        return res.json();
+      })
+      .catch(err => {
+        console.error('Failed to update client:', err);
+      });
+  }
+
+  renderSwimlane(name, clients, ref, status) {
     return (
-      <Swimlane name={name} clients={clients} dragulaRef={ref}/>
+      <Swimlane name={name} clients={clients} dragulaRef={ref} status={status}/>
     );
   }
 
   render() {
+    if (this.state.loading) {
+      return <div className="Board">Loading...</div>;
+    }
+
     return (
       <div className="Board">
         <div className="container-fluid">
           <div className="row">
             <div className="col-md-4">
-              {this.renderSwimlane('Backlog', this.state.clients.backlog, this.swimlanes.backlog)}
+              {this.renderSwimlane('Backlog', this.state.clients.backlog, this.swimlanes.backlog, 'backlog')}
             </div>
             <div className="col-md-4">
-              {this.renderSwimlane('In Progress', this.state.clients.inProgress, this.swimlanes.inProgress)}
+              {this.renderSwimlane('In Progress', this.state.clients.inProgress, this.swimlanes.inProgress, 'in-progress')}
             </div>
             <div className="col-md-4">
-              {this.renderSwimlane('Complete', this.state.clients.complete, this.swimlanes.complete)}
+              {this.renderSwimlane('Complete', this.state.clients.complete, this.swimlanes.complete, 'complete')}
             </div>
           </div>
         </div>
